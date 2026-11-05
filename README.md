@@ -14,15 +14,21 @@ Dokumentasi komprehensif ini merupakan panduan resmi (*Production Runbook*) untu
    - [Metode 1: Fast Path via GHCR Image (Direkomendasikan untuk Server Produksi)](#metode-1-fast-path-via-ghcr-image-direkomendasikan-untuk-server-produksi)
    - [Metode 2: Skrip Otomatisasi Satu-Klik (./deploy.sh)](#metode-2-skrip-otomatisasi-satu-klik-deploysh)
    - [Metode 3: Build Lokal dari Kode Sumber](#metode-3-build-lokal-dari-kode-sumber)
+   - [Langkah Lanjutan Wajib: Migrasi Database Manual](#langkah-lanjutan-wajib-migrasi-database-manual)
 5. [Validasi Deployment & Health Check](#5-validasi-deployment--health-check)
-6. [Hardening Keamanan Produksi](#6-hardening-keamanan-produksi)
-7. [Konfigurasi Host Reverse Proxy & SSL](#7-konfigurasi-host-reverse-proxy--ssl)
+6. [Manajemen Akun Admin & Pembuatan Pengguna Baru](#6-manajemen-akun-admin--pembuatan-pengguna-baru)
+   - [A. Struktur Role & Hak Akses (RBAC)](#a-struktur-role--hak-akses-rbac)
+   - [B. Pembuatan Akun via Portal Web GUI (Direkomendasikan)](#b-pembuatan-akun-via-portal-web-gui-direkomendasikan)
+   - [C. Pembuatan Akun via Terminal CLI (Laravel Tinker)](#c-pembuatan-akun-via-terminal-cli-laravel-tinker)
+   - [D. Prosedur Reset Kata Sandi Admin (Bila Terkunci)](#d-prosedur-reset-kata-sandi-admin-bila-terkunci)
+7. [Hardening Keamanan Produksi](#7-hardening-keamanan-produksi)
+8. [Konfigurasi Host Reverse Proxy & SSL](#8-konfigurasi-host-reverse-proxy--ssl)
    - [Opsi A: Nginx Reverse Proxy (Umum)](#opsi-a-nginx-reverse-proxy-umum)
    - [Opsi B: Caddy Server (Modern & Otomatis SSL)](#opsi-b-caddy-server-modern--otomatis-ssl)
-8. [Prosedur Update Aplikasi & Rollback](#8-prosedur-update-aplikasi--rollback)
-9. [Prosedur Pencadangan & Pemulihan (Backup & Restore)](#9-prosedur-pencadangan--pemulihan-backup--restore)
-10. [Panduan Operasional Harian & Pemantauan](#10-panduan-operasional-harian--pemantauan)
-11. [Matriks Penanganan Masalah (Troubleshooting Guide)](#11-matriks-penanganan-masalah-troubleshooting-guide)
+9. [Prosedur Update Aplikasi & Rollback](#9-prosedur-update-aplikasi--rollback)
+10. [Prosedur Pencadangan & Pemulihan (Backup & Restore MySQL)](#10-prosedur-pencadangan--pemulihan-backup--restore-mysql)
+11. [Panduan Operasional Harian & Pemantauan](#11-panduan-operasional-harian--pemantauan)
+12. [Matriks Penanganan Masalah (Troubleshooting Guide)](#12-matriks-penanganan-masalah-troubleshooting-guide)
 
 ---
 
@@ -245,13 +251,117 @@ curl -s http://localhost:3000/api/pengaduan/TKT-2026-99991
 
 ---
 
-## 6. Hardening Keamanan Produksi
+## 6. Manajemen Akun Admin & Pembuatan Pengguna Baru
+
+Sistem SIPPOL telah dilengkapi dengan basis data awal dan akun default melalui **Database Seeder**:
+- **Akun Bawaan Seeder**:
+  - **Username**: `admin`
+  - **Password**: `admin`
+  - **Role**: `super_admin`
+- **Data Referensi Seeder**: Jurnal kegiatan lapangan Satpol PP, data Satlinmas di 9 Kecamatan Buleleng, regu patroli trantib, dan regulasi Perda/Perbup.
+
+Untuk menjalankan seeder pada inisialisasi awal server baru:
+```bash
+docker compose exec backend php artisan db:seed --force
+```
+
+---
+
+### A. Struktur Role & Hak Akses (RBAC)
+
+Otorisasi sistem dikendalikan dengan *Role-Based Access Control* (RBAC) pada setiap portal:
+
+| Role | Hak Akses & Cakupan Operasional |
+|---|---|
+| `super_admin` | Akses penuh: manajemen pengguna, mutasi role, pantau log audit trail (`activity_logs`), dan akses seluruh portal bidang. |
+| `admin` | Verifikasi pengaduan warga, delegasi/disposisi tiket ke bidang terkait, serta monitoring umum. |
+| `bidang_trantib` | Portal Ketertiban Umum: Surat Perintah Tugas (SPT), penugasan Regu Patroli, shift kerja, dan penertiban K3. |
+| `bidang_linmas` | Portal Perlindungan Masyarakat: Database Satlinmas desa/kelurahan di 9 Kecamatan Buleleng dan jurnal kegiatan Linmas. |
+| `bidang_perada` | Portal Penegakan Peraturan Daerah: Master data regulasi Perda/Perbup, katalog pelanggaran, berkas BAP penindakan, dan sidang Tipiring. |
+| `bidang_sda` | Portal Sumber Daya Aparatur: Database personel Satpol PP (ASN, PPPK, Kontrak), rekam pelatihan/bimtek/kesamaptaan, dan pustaka SOP. |
+
+---
+
+### B. Pembuatan Akun via Portal Web GUI (Direkomendasikan)
+
+Jika Anda sudah login menggunakan akun `super_admin`:
+1. Masuk ke portal admin: `http://DOMAIN_ANDA:3000/admin/login` (atau port 3000).
+2. Di sidebar navigasi, buka menu **Manajemen User** (`/admin/manajemen-user`).
+3. Pada formulir **"Tambah Pengguna Baru"**, masukkan:
+   - **Nama Lengkap**: Nama resmi personel (contoh: *I Putu Suparta, S.H.*)
+   - **Username**: Nama pengguna unik tanpa spasi (contoh: *putu_trantib*)
+   - **Email**: Alamat email kedinasan (contoh: *putu@bulelengkab.go.id*)
+   - **Peran / Role**: Pilih role dari dropdown (`bidang_trantib`, `bidang_linmas`, dsb.)
+   - **Password**: Kata sandi minimal 8 karakter
+4. Klik tombol **Simpan Akun Pengguna**.
+5. Akun langsung aktif dan dapat langsung digunakan untuk login. Riwayat penambahan akun dicatat otomatis di **Log Aktivitas Admin**.
+
+---
+
+### C. Pembuatan Akun via Terminal CLI (Laravel Tinker)
+
+Jika Anda berada di server VPS melalui terminal dan ingin membuat akun baru secara langsung tanpa melalui GUI:
+
+#### Opsi 1: Perintah Cepat Satu Baris (One-Liner)
+```bash
+docker compose exec backend php artisan tinker --execute="
+App\Models\User::create([
+    'name' => 'Super Administrator',
+    'username' => 'superadmin',
+    'email' => 'superadmin@bulelengkab.go.id',
+    'password' => Hash::make('KataSandiAman123!'),
+    'role' => 'super_admin'
+]);
+echo PHP_EOL . '✅ Akun Super Admin berhasil dibuat!' . PHP_EOL;
+"
+```
+
+#### Opsi 2: Menggunakan Shell Interaktif Tinker
+```bash
+# 1. Masuk ke console Laravel Tinker
+docker compose exec backend php artisan tinker
+
+# 2. Jalankan perintah pembuatan user di console:
+App\Models\User::create([
+    'name' => 'Operator Trantib Singaraja',
+    'username' => 'danru_trantib',
+    'email' => 'trantib@bulelengkab.go.id',
+    'password' => Hash::make('BulelengTertib2026!'),
+    'role' => 'bidang_trantib'
+]);
+
+# 3. Keluar dari tinker
+exit
+```
+
+---
+
+### D. Prosedur Reset Kata Sandi Admin (Bila Terkunci)
+
+Jika kata sandi akun admin default atau akun staf terlupa, Anda dapat meresetnya langsung dari terminal server host:
+
+```bash
+docker compose exec backend php artisan tinker --execute="
+\$user = App\Models\User::where('username', 'admin')->first();
+if (\$user) {
+    \$user->password = Hash::make('PasswordBaru123!');
+    \$user->save();
+    echo '✅ Kata sandi untuk user ' . \$user->username . ' berhasil direset!' . PHP_EOL;
+} else {
+    echo '❌ User tidak ditemukan.' . PHP_EOL;
+}
+"
+```
+
+---
+
+## 7. Hardening Keamanan Produksi
 
 Sebelum mempublikasikan sistem ke jaringan publik/internet:
 
 1. **Ubah Kredensial Admin Bawaan**:
-   - Akun default dari seeder: Username `admin` / Password `admin` (Role `super_admin`).
-   - Masuk ke portal `/admin/login`, buka menu **Manajemen User** (`/admin/manajemen-user`), dan ganti kata sandi akun default dengan kombinasi kuat (minimal 12 karakter).
+   - Segera login ke portal `/admin/login` dengan akun default (`admin` / `admin`).
+   - Buka menu **Manajemen User** (`/admin/manajemen-user`) atau gunakan perintah reset CLI di atas untuk mengganti password `admin` menjadi kombinasi kuat (minimal 12 karakter).
 2. **Kunci Akses Berkas Environment**:
    Pastikan berkas konfigurasi tidak dapat dibaca oleh pengguna non-root di host:
    ```bash
@@ -270,7 +380,7 @@ Sebelum mempublikasikan sistem ke jaringan publik/internet:
 
 ---
 
-## 7. Konfigurasi Host Reverse Proxy & SSL
+## 8. Konfigurasi Host Reverse Proxy & SSL
 
 Pasang Reverse Proxy pada host utama untuk menangani terminasi SSL, HTTP/2, dan perutean domain.
 
@@ -349,7 +459,7 @@ api-sippol.bulelengkab.go.id {
 
 ---
 
-## 8. Prosedur Update Aplikasi & Rollback
+## 9. Prosedur Update Aplikasi & Rollback
 
 ### Alur Update ke Rilis Terbaru
 Setiap ada push ke branch `main`, GitHub Actions secara otomatis mem-build image baru ke GHCR. Untuk menerapkan rilis terbaru di server produksi:
@@ -382,7 +492,7 @@ docker compose up -d
 
 ---
 
-## 9. Prosedur Pencadangan & Pemulihan (Backup & Restore)
+## 10. Prosedur Pencadangan & Pemulihan (Backup & Restore MySQL)
 
 ### A. Backup Database MySQL
 Jalankan pencadangan SQL dump secara terjadwal (misal via Cron):
@@ -406,7 +516,7 @@ tar -czvf /var/backups/sippol_storage_$(date +%Y%m%d).tar.gz -C $(docker volume 
 
 ---
 
-## 10. Panduan Operasional Harian & Pemantauan
+## 11. Panduan Operasional Harian & Pemantauan
 
 | Kebutuhan | Perintah |
 |---|---|
@@ -425,7 +535,7 @@ tar -czvf /var/backups/sippol_storage_$(date +%Y%m%d).tar.gz -C $(docker volume 
 
 ---
 
-## 11. Matriks Penanganan Masalah (Troubleshooting Guide)
+## 12. Matriks Penanganan Masalah (Troubleshooting Guide)
 
 | Gejala / Error | Kemungkinan Penyebab | Langkah Solusi |
 |---|---|---|

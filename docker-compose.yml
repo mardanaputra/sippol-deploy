@@ -1,6 +1,29 @@
 name: sippol
 
 services:
+  mysql:
+    image: mysql:8.0
+    container_name: sippol-mysql
+    restart: unless-stopped
+    command: --default-authentication-plugin=mysql_native_password --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    env_file:
+      - .env.backend
+    environment:
+      MYSQL_DATABASE: "${DB_DATABASE:-sippol}"
+      MYSQL_USER: "${DB_USERNAME:-sippol_user}"
+      MYSQL_PASSWORD: "${DB_PASSWORD:-sippol_secret}"
+      MYSQL_ROOT_PASSWORD: "${MYSQL_ROOT_PASSWORD:-${DB_PASSWORD:-sippol_secret}}"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    networks:
+      - sippol-network
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u root -p$${MYSQL_ROOT_PASSWORD:-$${DB_PASSWORD:-sippol_secret}} || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
   backend:
     build:
       context: ../sippol-backend
@@ -8,25 +31,14 @@ services:
     container_name: sippol-backend
     restart: unless-stopped
     ports:
-      - "${BACKEND_PORT:-8000}:8000"
-    environment:
-      APP_NAME: "${APP_NAME:-SIPPOL PP Buleleng}"
-      APP_ENV: "${APP_ENV:-production}"
-      APP_DEBUG: "${APP_DEBUG:-false}"
-      APP_KEY: "${APP_KEY:-}"
-      APP_URL: "${APP_URL:-http://localhost:8000}"
-      DB_CONNECTION: "${DB_CONNECTION:-sqlite}"
-      DB_DATABASE: "${DB_DATABASE:-/app/database/database.sqlite}"
-      DB_HOST: "${DB_HOST:-mysql}"
-      DB_PORT: "${DB_PORT:-3306}"
-      DB_USERNAME: "${DB_USERNAME:-root}"
-      DB_PASSWORD: "${DB_PASSWORD:-}"
-      AUTORUN_MIGRATIONS: "${AUTORUN_MIGRATIONS:-true}"
-      RUN_SEEDERS: "${RUN_SEEDERS:-true}"
-      RECAPTCHA_SECRET_KEY: "${RECAPTCHA_SECRET_KEY:-}"
+      - "8000:8000"
+    env_file:
+      - .env.backend
+    depends_on:
+      mysql:
+        condition: service_healthy
     volumes:
       - backend_storage:/app/storage
-      - backend_database:/app/database
     networks:
       - sippol-network
     healthcheck:
@@ -40,21 +52,12 @@ services:
     build:
       context: ../sippol-frontend
       dockerfile: Dockerfile
-      args:
-        NEXT_PUBLIC_API_URL: "${NEXT_PUBLIC_API_URL:-http://localhost:8000}"
-        NEXT_PUBLIC_RECAPTCHA_SITE_KEY: "${NEXT_PUBLIC_RECAPTCHA_SITE_KEY:-}"
-        INTERNAL_BACKEND_URL: "${INTERNAL_BACKEND_URL:-http://backend:8000}"
     container_name: sippol-frontend
     restart: unless-stopped
     ports:
-      - "${FRONTEND_PORT:-3000}:3000"
-    environment:
-      NODE_ENV: production
-      PORT: 3000
-      HOSTNAME: "0.0.0.0"
-      NEXT_PUBLIC_API_URL: "${NEXT_PUBLIC_API_URL:-http://localhost:8000}"
-      NEXT_PUBLIC_RECAPTCHA_SITE_KEY: "${NEXT_PUBLIC_RECAPTCHA_SITE_KEY:-}"
-      INTERNAL_BACKEND_URL: "${INTERNAL_BACKEND_URL:-http://backend:8000}"
+      - "3000:3000"
+    env_file:
+      - .env.frontend
     depends_on:
       backend:
         condition: service_healthy
@@ -68,10 +71,10 @@ services:
       start_period: 10s
 
 volumes:
+  mysql_data:
+    name: sippol_mysql_data
   backend_storage:
     name: sippol_backend_storage
-  backend_database:
-    name: sippol_backend_database
 
 networks:
   sippol-network:

@@ -12,18 +12,39 @@ echo "=========================================================="
 echo "   🚀 Memulai Deployment SIPPOL PP Buleleng               "
 echo "=========================================================="
 
-# 1. Cek berkas .env
-if [ ! -f .env ]; then
-    echo "⚠️  Berkas .env tidak ditemukan. Menyalin dari .env.example..."
-    cp .env.example .env
-    echo "✅ Berkas .env berhasil dibuat. Silakan tinjau konfigurasinya jika diperlukan."
+# 1. Pastikan .env.backend ada
+if [ ! -f .env.backend ]; then
+    if [ -f .env.backend.example ]; then
+        echo "⚠️  .env.backend tidak ditemukan. Menyalin dari .env.backend.example..."
+        cp .env.backend.example .env.backend
+    elif [ -f ../sippol-backend/.env.example ]; then
+        echo "⚠️  .env.backend tidak ditemukan. Mengambil dari ../sippol-backend/.env.example..."
+        cp ../sippol-backend/.env.example .env.backend
+    else
+        touch .env.backend
+    fi
+    echo "✅ Berkas .env.backend telah disiapkan."
 fi
 
-# 2. Build dan jalankan kontainer
-echo "📦 Membangun dan menjalankan kontainer Docker..."
+# 2. Pastikan .env.frontend ada
+if [ ! -f .env.frontend ]; then
+    if [ -f .env.frontend.example ]; then
+        echo "⚠️  .env.frontend tidak ditemukan. Menyalin dari .env.frontend.example..."
+        cp .env.frontend.example .env.frontend
+    elif [ -f ../sippol-frontend/.env.example ]; then
+        echo "⚠️  .env.frontend tidak ditemukan. Mengambil dari ../sippol-frontend/.env.example..."
+        cp ../sippol-frontend/.env.example .env.frontend
+    else
+        touch .env.frontend
+    fi
+    echo "✅ Berkas .env.frontend telah disiapkan."
+fi
+
+# 3. Build dan jalankan kontainer
+echo "📦 Menjalankan docker compose up..."
 docker compose up -d --build --remove-orphans
 
-# 3. Tunggu hingga kontainer berstatus healthy
+# 4. Tunggu hingga kontainer berstatus healthy
 echo "⏳ Menunggu status kesehatan layanan..."
 sleep 5
 

@@ -1,145 +1,269 @@
-# SIPPOL PP Buleleng - Panduan Deployment
+# SIPPOL PP Buleleng - Panduan Deployment Produksi
 
-Dokumentasi ini menjelaskan prosedur deployment produksi untuk aplikasi **SIPPOL PP Buleleng** (Sistem Informasi Pelayanan Pengaduan & Operasional Satpol PP Kabupaten Buleleng) menggunakan kontainer Docker atomic (MySQL 8.0, FrankenPHP Laravel 12 API, dan Next.js 16 Standalone) dengan konfigurasi lingkungan terpisah (**`.env.backend`** dan **`.env.frontend`**).
+Dokumentasi komprehensif ini merupakan panduan resmi (*Production Runbook*) untuk tim operasional dan DevOps dalam melakukan deployment, pemeliharaan, serta mitigasi insiden sistem **SIPPOL PP Buleleng** (Sistem Informasi Pelayanan Pengaduan & Operasional Satpol PP Kabupaten Buleleng).
 
 ---
 
-## 1. Arsitektur Deployment & Pola `env_file`
+## Daftar Isi
+1. [Arsitektur Sistem & Topologi Jaringan](#1-arsitektur-sistem--topologi-jaringan)
+2. [Matriks Port & Komponen Kontainer](#2-matriks-port--komponen-kontainer)
+3. [Kamus Konfigurasi Lingkungan (Environment Dictionary)](#3-kamus-konfigurasi-lingkungan-environment-dictionary)
+   - [Konfigurasi Backend (.env.backend)](#a-konfigurasi-backend-envbackend)
+   - [Konfigurasi Frontend (.env.frontend)](#b-konfigurasi-frontend-envfrontend)
+4. [Prosedur Deployment](#4-prosedur-deployment)
+   - [Metode 1: Fast Path via GHCR Image (Direkomendasikan untuk Server Produksi)](#metode-1-fast-path-via-ghcr-image-direkomendasikan-untuk-server-produksi)
+   - [Metode 2: Skrip Otomatisasi Satu-Klik (./deploy.sh)](#metode-2-skrip-otomatisasi-satu-klik-deploysh)
+   - [Metode 3: Build Lokal dari Kode Sumber](#metode-3-build-lokal-dari-kode-sumber)
+5. [Validasi Deployment & Health Check](#5-validasi-deployment--health-check)
+6. [Hardening Keamanan Produksi](#6-hardening-keamanan-produksi)
+7. [Konfigurasi Host Reverse Proxy & SSL](#7-konfigurasi-host-reverse-proxy--ssl)
+   - [Opsi A: Nginx Reverse Proxy (Umum)](#opsi-a-nginx-reverse-proxy-umum)
+   - [Opsi B: Caddy Server (Modern & Otomatis SSL)](#opsi-b-caddy-server-modern--otomatis-ssl)
+8. [Prosedur Update Aplikasi & Rollback](#8-prosedur-update-aplikasi--rollback)
+9. [Prosedur Pencadangan & Pemulihan (Backup & Restore)](#9-prosedur-pencadangan--pemulihan-backup--restore)
+10. [Panduan Operasional Harian & Pemantauan](#10-panduan-operasional-harian--pemantauan)
+11. [Matriks Penanganan Masalah (Troubleshooting Guide)](#11-matriks-penanganan-masalah-troubleshooting-guide)
 
-Berkas `docker-compose.yml` dirancang bersifat **statik dan *immutable*** (tidak perlu diubah saat melakukan deploy antar server atau lingkungan).
+---
 
-Seluruh variabel konfigurasi disalurkan menggunakan properti `env_file`:
-- Layanan **`mysql`**: Mengambil kredensial database (`MYSQL_DATABASE`, `MYSQL_USER`, `MYSQL_PASSWORD`, `MYSQL_ROOT_PASSWORD`) yang diwariskan dari **`.env.backend`**.
-- Layanan **`backend`**: Membaca seluruh variabel Laravel dan koneksi database dari **`.env.backend`**.
-- Layanan **`frontend`**: Membaca konfigurasi aplikasi peramban & proxy dari **`.env.frontend`**.
+## 1. Arsitektur Sistem & Topologi Jaringan
+
+SIPPOL dideploy dalam 3 kontainer terisolasi (*atomic containers*) di dalam jaringan *bridge* privat Docker (`sippol-network`). Desain deployment bersifat **statik dan *immutable***: berkas `docker-compose.yml` tidak perlu diubah antar server karena seluruh parameter disalurkan via properti `env_file`.
 
 ```
-                                      [ Browser / Warga & Admin ]
-                                                   │
-                        ┌──────────────────────────┴──────────────────────────┐
-                        ▼ (Port 3000)                                         ▼ (Port 8000)
-            ┌───────────────────────┐                             ┌───────────────────────┐
-            │    sippol-frontend    │                             │    sippol-backend     │
-            │  (Next.js Standalone) │ ──[ internal proxy /api ]──>│ (Laravel + FrankenPHP)│
-            └───────────┬───────────┘                             └───────────┬───────────┘
-                        │ (env_file)                                          │ (env_file)
-                 [.env.frontend]                                       [.env.backend]
-                                                                              │
-                                                                   ┌──────────┴──────────┐
-                                                                   ▼                     ▼
-                                                             [sippol-mysql]       [Storage Volume]
-                                                              (MySQL 8.0)        (foto & berkas BAP)
+                              [ Internet / Browser Warga & Admin ]
+                                               │
+                                      (Port 80 / Port 443 SSL)
+                                               │
+                                  ┌────────────▼───────────┐
+                                  │   Host Reverse Proxy   │
+                                  │    (Nginx / Caddy)     │
+                                  └────────────┬───────────┘
+                                               │
+                        ┌──────────────────────┴──────────────────────┐
+                        ▼ (HTTP 127.0.0.1:3000)                       ▼ (HTTP 127.0.0.1:8000)
+            ┌───────────────────────┐                     ┌───────────────────────┐
+            │    sippol-frontend    │                     │    sippol-backend     │
+            │  (Next.js Standalone) │ ──[ internal proxy ]──>│ (Laravel + FrankenPHP)│
+            └───────────┬───────────┘    http://backend:8000 └───────────┬───────────┘
+                        │ (env_file)                                  │ (env_file)
+                 [.env.frontend]                               [.env.backend]
+                                                                      │
+                                                           ┌──────────┴──────────┐
+                                                           │ (sippol-network)    │
+                                                           ▼ (Internal: 3306)    ▼
+                                                     ┌───────────┐         ┌───────────┐
+                                                     │sippol-mysql│         │  storage  │
+                                                     │(MySQL 8.0)│         │ (uploads) │
+                                                     └───────────┘         └───────────┘
+                                                           │                     │
+                                                    [mysql_data vol]     [backend_storage vol]
 ```
 
-1. **`sippol-mysql` (Database Service)**:
-   - MySQL 8.0 dengan volume persisten `sippol_mysql_data`.
-   - Menggunakan kredensial yang ditentukan di `.env.backend` (`DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD`, `MYSQL_ROOT_PASSWORD`).
-   - Dilengkapi healthcheck `mysqladmin ping` untuk memastikan database siap menerima koneksi sebelum backend memulai migrasi.
-2. **`sippol-backend` (Port 8000)**:
-   - **Image Publik GHCR**: `ghcr.io/mardanaputra/sippol-backend:latest` (dan alias `ghcr.io/mardanaputra/sippol-backed:latest`).
-   - Laravel 12 API ditenagai oleh **FrankenPHP** (engine server modern berbasis Caddy & Go) di atas image `dunglas/frankenphp:1-php8.2-alpine`.
-   - Menghilangkan kebutuhan Nginx, PHP-FPM, dan Supervisor terpisah menjadi **1 binary atomic** berkinerja tinggi.
-   - Entrypoint otomatis menunggu kesiapan MySQL, menjalankan migrasi, dan menyemai data awal.
-   - Healthcheck bawaan Laravel di `/up`.
-3. **`sippol-frontend` (Port 3000)**:
-   - **Image Publik GHCR**: `ghcr.io/mardanaputra/sippol-frontend:latest`.
-   - Next.js 16.2.6 Standalone pada image minimal `node:20-alpine` (~100 MB).
-   - Menjalankan server Node.js non-root (`nextjs`, UID 1001).
-   - Membaca konfigurasi dari `.env.frontend` (`INTERNAL_BACKEND_URL`, `NEXT_PUBLIC_*`).
-   - Healthcheck di root `/`.
+### Karakteristik Arsitektur:
+1. **Frontend (Next.js 16 Standalone)**:
+   - Dijalankan sebagai non-root user (`nextjs`, UID 1001) di atas `node:20-alpine`.
+   - Ukuran image minimalis (~100 MB).
+   - Pemanggilan API relatif `/api/*` secara otomatis diproxy oleh server Next.js ke backend melalui internal Docker bridge (`INTERNAL_BACKEND_URL=http://backend:8000`), sehingga tidak memerlukan konfigurasi CORS rumit di sisi peramban.
+2. **Backend (Laravel 12 API + FrankenPHP)**:
+   - Ditenagai oleh **FrankenPHP** (engine server berbasis Caddy & Go) di atas image `dunglas/frankenphp:1-php8.2-alpine`.
+   - Menggantikan Nginx, PHP-FPM, dan Supervisor menjadi **1 binary atomic** dengan performa tinggi, mendukung HTTP/2, HTTP/3, serta kompresi otomatis Zstandard, Brotli, dan Gzip.
+   - Konfigurasi Caddyfile telah di-hardened dengan batasan body size 64MB untuk menangani unggahan foto bukti & berkas PDF Base64.
+3. **Database (MySQL 8.0)**:
+   - Beroperasi secara privat dalam jaringan internal Docker (port 3306 tidak diekspos ke publik host untuk keamanan maksimal).
+   - Dilengkapi healthcheck native `mysqladmin ping`.
 
 ---
 
-## 2. Persyaratan Sistem
+## 2. Matriks Port & Komponen Kontainer
 
-- **Sistem Operasi**: Linux (Ubuntu 22.04/24.04 LTS), macOS, atau Windows WSL2.
-- **Docker Engine**: Versi 24.0+ atau lebih baru.
-- **Docker Compose**: Versi v2.20+ (sintaks `docker compose`).
-- **RAM**: Minimal 2 GB (Rekomendasi 4 GB untuk MySQL dan build Next.js).
-- **Ruang Disk**: Minimal 10 GB kosong.
+| Layanan | Nama Kontainer | Port Host | Port Internal | Image Registry | Deskripsi |
+|---|---|---|---|---|---|
+| **Frontend** | `sippol-frontend` | `3000` | `3000/tcp` | `ghcr.io/mardanaputra/sippol-frontend:latest` | Next.js 16 App Router (UI Warga & Admin Portal) |
+| **Backend** | `sippol-backend` | `8000` | `8000/tcp` | `ghcr.io/mardanaputra/sippol-backend:latest` | Laravel 12 API ditenagai FrankenPHP |
+| **Database** | `sippol-mysql` | *Tidak diekspos* | `3306/tcp` | `mysql:8.0` | Basis data relasional produksi |
 
 ---
 
-## 3. Panduan untuk Tim Deployment (Inisialisasi Environment)
+## 3. Kamus Konfigurasi Lingkungan (Environment Dictionary)
 
-Tim deployment **tidak perlu mengubah berkas `docker-compose.yml`**. Cukup siapkan dua berkas `.env` berikut:
+Tim deployment **tidak perlu memodifikasi `docker-compose.yml`**. Seluruh konfigurasi diatur melalui dua berkas berikut:
 
-### Langkah 1: Siapkan Konfigurasi Backend (`.env.backend`)
-Salin template konfigurasi dari `sippol-deploy/.env.backend.example` atau langsung dari repositori backend (`sippol-backend/.env.example`):
+### A. Konfigurasi Backend (`.env.backend`)
+Salin berkas template: `cp .env.backend.example .env.backend`
+
+| Variabel | Tipe | Default / Rekomendasi | Deskripsi & Catatan |
+|---|---|---|---|
+| `APP_NAME` | String | `"SIPPOL PP Buleleng"` | Nama aplikasi untuk email dan logging. |
+| `APP_ENV` | String | `production` | Wajib `production` pada server rilis untuk menonaktifkan debug display. |
+| `APP_KEY` | String | *(Dibuat otomatis)* | Kunci enkripsi 32-karakter. Otomatis dibuat jika dikosongkan pada start pertama. |
+| `APP_DEBUG` | Boolean | `false` | Wajib `false` di lingkungan produksi untuk mencegah kebocoran stack trace. |
+| `APP_URL` | URL | `https://api-sippol.bulelengkab.go.id` | URL publik backend API. |
+| `SERVER_NAME` | String | `:8000` | Port listen engine FrankenPHP Caddy. |
+| `APP_TIMEZONE` | String | `Asia/Makassar` | Zona waktu operasional (WITA untuk Kabupaten Buleleng). |
+| `DB_CONNECTION` | String | `mysql` | Driver koneksi database. |
+| `DB_HOST` | Hostname | `mysql` | Nama layanan kontainer database dalam jaringan Docker. |
+| `DB_PORT` | Integer | `3306` | Port internal MySQL. |
+| `DB_DATABASE` | String | `sippol` | Nama skema database yang dibuat. |
+| `DB_USERNAME` | String | `sippol_user` | Akun database untuk operasional Laravel. |
+| `DB_PASSWORD` | String | *Rahasia Aman* | Kata sandi akun database `sippol_user`. |
+| `MYSQL_ROOT_PASSWORD` | String | *Rahasia Aman* | Kata sandi superuser root MySQL di kontainer `sippol-mysql`. |
+| `AUTORUN_MIGRATIONS` | Boolean | `true` | Otomatis menjalankan `php artisan migrate --force` saat kontainer menyala. |
+| `RUN_SEEDERS` | Boolean | `true` | Otomatis menjalankan seeder akun admin awal dan data referensi Satpol PP. |
+| `RECAPTCHA_SECRET_KEY` | String | *Kunci Google Secret* | Kunci server-side untuk memvalidasi token reCAPTCHA dari halaman login admin. |
+
+---
+
+### B. Konfigurasi Frontend (`.env.frontend`)
+Salin berkas template: `cp .env.frontend.example .env.frontend`
+
+| Variabel | Tipe | Default / Rekomendasi | Deskripsi & Catatan |
+|---|---|---|---|
+| `NODE_ENV` | String | `production` | Mengaktifkan optimasi runtime Next.js production. |
+| `PORT` | Integer | `3000` | Port internal aplikasi Next.js. |
+| `HOSTNAME` | String | `0.0.0.0` | Mengikat server Node.js ke seluruh interface kontainer. |
+| `INTERNAL_BACKEND_URL` | URL | `http://backend:8000` | **Kritis**: Alamat internal kontainer backend untuk proxy server-side Next.js. |
+| `NEXT_PUBLIC_API_URL` | URL | *Kosongkan (default)* | Dikosongkan agar peramban menggunakan relative proxy `/api/*`. Jika diisi, peramban akan memanggil URL tersebut secara cross-origin. |
+| `NEXT_PUBLIC_RECAPTCHA_SITE_KEY` | String | *Kunci Google Public* | Kunci publik Google reCAPTCHA v2 / v3 di formulir login admin. |
+
+---
+
+## 4. Prosedur Deployment
+
+Pastikan Anda berada di direktori `sippol-deploy/`:
 ```bash
-# Opsi A: Salin dari template deploy
-cp .env.backend.example .env.backend
-
-# Opsi B: Ambil langsung dari source backend
-cp ../sippol-backend/.env.example .env.backend
+cd /path/to/sippol/sippol-deploy
 ```
 
-**Variabel database di `.env.backend` (otomatis diwariskan ke kontainer MySQL):**
-```ini
-DB_CONNECTION=mysql
-DB_HOST=mysql
-DB_PORT=3306
-DB_DATABASE=sippol
-DB_USERNAME=sippol_user
-DB_PASSWORD=rahasia_aman_anda
+### Metode 1: Fast Path via GHCR Image (Direkomendasikan untuk Server Produksi)
+Metode ini adalah cara tercepat di server VPS tanpa memerlukan instalasi Node.js, PHP, atau dependensi build pada host:
 
-# Opsional: Password root MySQL (bila tidak diset, menggunakan nilai DB_PASSWORD)
-MYSQL_ROOT_PASSWORD=rahasia_root_anda
-```
+1. **Siapkan berkas environment:**
+   ```bash
+   cp .env.backend.example .env.backend
+   cp .env.frontend.example .env.frontend
+   nano .env.backend   # Sesuaikan kata sandi database dan reCAPTCHA
+   nano .env.frontend  # Sesuaikan site key reCAPTCHA
+   ```
+
+2. **Tarik image terbaru dari GitHub Container Registry:**
+   ```bash
+   docker compose pull
+   ```
+
+3. **Jalankan seluruh layanan:**
+   ```bash
+   docker compose up -d --remove-orphans
+   ```
 
 ---
 
-### Langkah 2: Siapkan Konfigurasi Frontend (`.env.frontend`)
-Salin template konfigurasi dari `sippol-deploy/.env.frontend.example` atau langsung dari repositori frontend (`sippol-frontend/.env.example`):
+### Metode 2: Skrip Otomatisasi Satu-Klik (`./deploy.sh`)
+Skrip ini akan memeriksa kelengkapan berkas `.env`, menarik image pre-built jika ada, menjalankan kompilasi jika diperlukan, dan menunggu hingga seluruh kontainer berstatus `healthy`:
+
 ```bash
-# Opsi A: Salin dari template deploy
-cp .env.frontend.example .env.frontend
-
-# Opsi B: Ambil langsung dari source frontend
-cp ../sippol-frontend/.env.example .env.frontend
-```
-
-**Variabel penting di `.env.frontend`:**
-- `INTERNAL_BACKEND_URL`: URL internal kontainer Docker (`http://backend:8000`). Next.js server menggunakan nilai ini untuk meneruskan pemanggilan `/api/*`.
-- `NEXT_PUBLIC_API_URL`: Dikosongkan secara default agar peramban menggunakan proxy relatif `/api/*` secara otomatis, atau diisi domain API publik jika backend diakses secara cross-origin langsung (misal: `https://api-sippol.bulelengkab.go.id`).
-- `NEXT_PUBLIC_RECAPTCHA_SITE_KEY`: Kunci publik Google reCAPTCHA v2 / v3 di sisi client.
-
----
-
-### Langkah 3: Jalankan Deployment
-
-Gunakan skrip otomatisasi satu klik:
-```bash
+chmod +x deploy.sh
 ./deploy.sh
 ```
 
-Atau jalankan perintah docker compose standar:
+---
+
+### Metode 3: Build Lokal dari Kode Sumber
+Jika Anda melakukan kustomisasi kode sumber lokal dan ingin mem-build ulang kontainer secara mandiri:
 ```bash
-docker compose up -d --build
+docker compose up -d --build --remove-orphans
 ```
 
 ---
 
-## 4. Akun Admin Bawaan (Default Seeder)
+## 5. Validasi Deployment & Health Check
 
-Setelah migrasi dan seeder selesai berjalan, akun admin bawaan yang tersedia:
-- **URL Login Admin**: `http://IP_SERVER:3000/admin/login`
-- **Username**: `admin`
-- **Password**: `admin`
-- **Role**: `super_admin`
+Setelah kontainer menyala, lakukan verifikasi status:
 
-> ⚠️ **PENTING (KEAMANAN PRODUKSI)**: Segera masuk ke menu **Manajemen User** (`/admin/manajemen-user`) setelah instalasi dan ubah kata sandi akun `admin`!
+### 1. Periksa Status Kontainer Docker
+```bash
+docker compose ps
+```
+**Ekspektasi Output:**
+```text
+NAME              IMAGE                                         COMMAND                  STATUS                   PORTS
+sippol-backend    ghcr.io/mardanaputra/sippol-backend:latest    "docker-entrypoint.s…"   Up (healthy)             0.0.0.0:8000->8000/tcp
+sippol-frontend   ghcr.io/mardanaputra/sippol-frontend:latest   "docker-entrypoint.s…"   Up (healthy)             0.0.0.0:3000->3000/tcp
+sippol-mysql      mysql:8.0                                     "docker-entrypoint.s…"   Up (healthy)             3306/tcp, 33060/tcp
+```
+> Pastikan ketiga layanan memiliki label `(healthy)`.
+
+### 2. Uji Kesehatan Backend API
+```bash
+curl -i http://localhost:8000/up
+```
+**Respon yang Diharapkan:**
+```http
+HTTP/1.1 200 OK
+Content-Type: text/html; charset=utf-8
+...
+Application up
+```
+
+### 3. Uji Ketersediaan Frontend
+```bash
+curl -I http://localhost:3000/
+```
+**Respon yang Diharapkan:**
+```http
+HTTP/1.1 200 OK
+X-Powered-By: Next.js
+...
+```
+
+### 4. Uji Integrasi End-to-End (Proxy Frontend ke Backend via MySQL)
+```bash
+curl -s http://localhost:3000/api/pengaduan/TKT-2026-99991
+```
+**Respon yang Diharapkan:** Objek JSON tiket pengaduan yang berasal dari seeder database MySQL.
 
 ---
 
-## 5. Konfigurasi Reverse Proxy Host (Nginx & SSL Let's Encrypt)
+## 6. Hardening Keamanan Produksi
 
-Di server produksi, pasang Nginx pada host utama untuk mengarahkan domain resmi ke port kontainer:
+Sebelum mempublikasikan sistem ke jaringan publik/internet:
+
+1. **Ubah Kredensial Admin Bawaan**:
+   - Akun default dari seeder: Username `admin` / Password `admin` (Role `super_admin`).
+   - Masuk ke portal `/admin/login`, buka menu **Manajemen User** (`/admin/manajemen-user`), dan ganti kata sandi akun default dengan kombinasi kuat (minimal 12 karakter).
+2. **Kunci Akses Berkas Environment**:
+   Pastikan berkas konfigurasi tidak dapat dibaca oleh pengguna non-root di host:
+   ```bash
+   chmod 600 .env.backend .env.frontend
+   ```
+3. **Konfigurasi Firewall Host (UFW)**:
+   Hanya port 80 dan 443 yang boleh dibuka ke internet publik. Port kontainer (3000, 8000) dan database (3306) tidak boleh diakses langsung dari luar:
+   ```bash
+   sudo ufw default deny incoming
+   sudo ufw default allow outgoing
+   sudo ufw allow 22/tcp    # SSH
+   sudo ufw allow 80/tcp    # HTTP
+   sudo ufw allow 443/tcp   # HTTPS
+   sudo ufw enable
+   ```
+
+---
+
+## 7. Konfigurasi Host Reverse Proxy & SSL
+
+Pasang Reverse Proxy pada host utama untuk menangani terminasi SSL, HTTP/2, dan perutean domain.
+
+### Opsi A: Nginx Reverse Proxy (Umum)
+
+Buat file konfigurasi `/etc/nginx/sites-available/sippol.conf`:
 
 ```nginx
-# 1. Frontend: sippol.bulelengkab.go.id -> Port 3000
+# 1. Frontend Web & Portal: sippol.bulelengkab.go.id
 server {
+    listen 80;
     server_name sippol.bulelengkab.go.id;
+
+    client_max_body_size 64M;
 
     location / {
         proxy_pass http://127.0.0.1:3000;
@@ -154,9 +278,11 @@ server {
     }
 }
 
-# 2. Backend API: api-sippol.bulelengkab.go.id -> Port 8000
+# 2. Backend REST API: api-sippol.bulelengkab.go.id (Opsional / Direct API)
 server {
+    listen 80;
     server_name api-sippol.bulelengkab.go.id;
+
     client_max_body_size 64M;
 
     location / {
@@ -169,42 +295,122 @@ server {
 }
 ```
 
-Pasang sertifikat SSL gratis dengan Certbot:
+Aktifkan konfigurasi dan terbitkan sertifikat SSL gratis via Certbot:
 ```bash
+sudo ln -s /etc/nginx/sites-available/sippol.conf /etc/nginx/sites-enabled/
+sudo nginx -t
+sudo systemctl reload nginx
 sudo certbot --nginx -d sippol.bulelengkab.go.id -d api-sippol.bulelengkab.go.id
 ```
 
 ---
 
-## 6. Perintah Operasional Harian
+### Opsi B: Caddy Server (Modern & Otomatis SSL)
 
-| Perintah | Deskripsi |
-|---|---|
-| `docker compose logs -f` | Memantau seluruh log aplikasi (MySQL, Backend, Frontend) |
-| `docker compose logs -f mysql` | Memantau log database MySQL |
-| `docker compose logs -f backend` | Memantau log FrankenPHP / Laravel |
-| `docker compose logs -f frontend` | Memantau log frontend Next.js |
-| `docker compose restart` | Memulai ulang seluruh kontainer |
-| `docker compose stop` | Menghentikan seluruh kontainer tanpa menghapus data |
-| `docker compose down` | Mematikan dan melepas kontainer |
-| `docker compose down -v` | ⚠️ Menghapus kontainer beserta volume data database MySQL |
-| `docker compose exec mysql mysql -u sippol_user -p sippol` | Membuka MySQL CLI di kontainer database |
-| `docker compose exec backend php artisan tinker` | Membuka Laravel Tinker CLI |
+Jika host menggunakan Caddy, buat file `/etc/caddy/Caddyfile`:
+
+```caddy
+sippol.bulelengkab.go.id {
+    request_body {
+        max_size 64MB
+    }
+    reverse_proxy 127.0.0.1:3000
+}
+
+api-sippol.bulelengkab.go.id {
+    request_body {
+        max_size 64MB
+    }
+    reverse_proxy 127.0.0.1:8000
+}
+```
+*Caddy akan secara otomatis menerbitkan dan memperbarui sertifikat SSL Let's Encrypt tanpa konfigurasi tambahan.*
 
 ---
 
-## 7. Prosedur Pencadangan (Backup & Restore MySQL)
+## 8. Prosedur Update Aplikasi & Rollback
 
-Data persisten disimpan pada named volume Docker:
-1. `sippol_mysql_data`: Menyimpan seluruh tabel basis data MySQL di `/var/lib/mysql`.
-2. `sippol_backend_storage`: Menyimpan berkas unggahan di `/app/storage/app/public/`.
+### Alur Update ke Rilis Terbaru
+Setiap ada push ke branch `main`, GitHub Actions secara otomatis mem-build image baru ke GHCR. Untuk menerapkan rilis terbaru di server produksi:
 
-### Backup Database MySQL (mysqldump)
 ```bash
-docker compose exec mysql mysqldump -u root -p${MYSQL_ROOT_PASSWORD:-sippol_secret} sippol > backup_sippol_$(date +%Y%m%d).sql
+cd /path/to/sippol/sippol-deploy
+
+# 1. Tarik image terbaru dari GHCR
+docker compose pull
+
+# 2. Terapkan kontainer baru tanpa downtime lama
+docker compose up -d --remove-orphans
+
+# 3. Bersihkan image usang dari disk host
+docker image prune -f
 ```
 
-### Restore Database MySQL
-```bash
-cat backup_sippol_20261105.sql | docker compose exec -T mysql mysql -u root -p${MYSQL_ROOT_PASSWORD:-sippol_secret} sippol
+### Prosedur Rollback Cepat
+Jika versi terbaru memiliki anomali, Anda dapat mengarahkan ke tag SHA commit sebelumnya di `docker-compose.yml`:
+```yaml
+backend:
+  image: ghcr.io/mardanaputra/sippol-backend:sha-<commit_sebelumnya>
+frontend:
+  image: ghcr.io/mardanaputra/sippol-frontend:sha-<commit_sebelumnya>
 ```
+Lalu jalankan:
+```bash
+docker compose up -d
+```
+
+---
+
+## 9. Prosedur Pencadangan & Pemulihan (Backup & Restore)
+
+### A. Backup Database MySQL
+Jalankan pencadangan SQL dump secara terjadwal (misal via Cron):
+```bash
+docker compose exec -T mysql mysqldump -u root -p${MYSQL_ROOT_PASSWORD} sippol > /var/backups/sippol_$(date +%Y%m%d_%H%M%S).sql
+gzip /var/backups/sippol_*.sql
+```
+
+### B. Restore Database MySQL
+Untuk memulihkan database dari file backup SQL:
+```bash
+# Pastikan kontainer mysql aktif
+gunzip -k /var/backups/sippol_20261105.sql.gz
+cat /var/backups/sippol_20261105.sql | docker compose exec -T mysql mysql -u root -p${MYSQL_ROOT_PASSWORD} sippol
+```
+
+### C. Backup Berkas Media & Dokumen Storage (`/app/storage`)
+```bash
+tar -czvf /var/backups/sippol_storage_$(date +%Y%m%d).tar.gz -C $(docker volume inspect --format '{{ .Mountpoint }}' sippol_backend_storage) .
+```
+
+---
+
+## 10. Panduan Operasional Harian & Pemantauan
+
+| Kebutuhan | Perintah |
+|---|---|
+| Memantau seluruh log aktif | `docker compose logs -f` |
+| Memantau log backend saja | `docker compose logs -f backend` |
+| Memantau log database saja | `docker compose logs -f mysql` |
+| Memantau log frontend saja | `docker compose logs -f frontend` |
+| Memeriksa penggunaan CPU & Memori | `docker stats` |
+| Masuk ke terminal backend | `docker compose exec backend sh` |
+| Menjalankan CLI Laravel Tinker | `docker compose exec backend php artisan tinker` |
+| Memeriksa daftar rute aktif | `docker compose exec backend php artisan route:list` |
+| Membersihkan cache Laravel | `docker compose exec backend php artisan optimize:clear` |
+| Menghentikan layanan sementara | `docker compose stop` |
+| Memulai ulang layanan | `docker compose restart` |
+| Mematikan kontainer | `docker compose down` |
+
+---
+
+## 11. Matriks Penanganan Masalah (Troubleshooting Guide)
+
+| Gejala / Error | Kemungkinan Penyebab | Langkah Solusi |
+|---|---|---|
+| **Backend loop restart (`unhealthy`)** | MySQL belum siap atau kredensial di `.env.backend` salah. | Periksa log dengan `docker compose logs backend`. Pastikan `DB_HOST=mysql`, `DB_USERNAME`, dan `DB_PASSWORD` sama persis dengan kredensial MySQL. |
+| **Error `413 Request Entity Too Large`** | Ukuran file bukti melampaui batas reverse proxy host. | Tambahkan direktif `client_max_body_size 64M;` pada blok Nginx host di `/etc/nginx/sites-available/sippol.conf`. |
+| **Validasi Captcha Gagal pada Login Admin** | `RECAPTCHA_SECRET_KEY` atau `NEXT_PUBLIC_RECAPTCHA_SITE_KEY` belum diset atau salah domain. | Daftarkan domain resmi di [Google reCAPTCHA Admin Console](https://www.google.com/recaptcha/admin) untuk tipe v2/v3 Checkbox, lalu perbarui `.env.backend` dan `.env.frontend`. |
+| **Peta Leaflet / Chart Kosong atau Crash** | Render sisi server (*SSR*) mengakses objek `window`. | Komponen peta Leaflet dan Chart di frontend dirancang dengan `dynamic(() => import(...), { ssr: false })`. Pastikan koneksi internet peramban mengizinkan pemuatan tile OpenStreetMap. |
+| **Izin Tulis Storage Gagal (Permission Denied)** | Hak akses folder storage belum dimiliki user `www-data`. | Jalankan: `docker compose exec backend chown -R www-data:www-data /app/storage /app/bootstrap/cache && chmod -R 775 /app/storage`. |
+| **MySQL Gagal Start (Port Conflict)** | Port 3306 pada host sudah digunakan oleh MySQL lokal. | Kontainer `sippol-mysql` pada `docker-compose.yml` sengaja tidak mengekspos port 3306 ke host untuk menghindari konflik. Bila ada mapping manual ke host, matikan MySQL lokal atau ubah binding port. |

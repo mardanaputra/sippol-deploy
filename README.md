@@ -36,11 +36,13 @@ Seluruh variabel konfigurasi disalurkan menggunakan properti `env_file`:
    - Menggunakan kredensial yang ditentukan di `.env.backend` (`DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD`, `MYSQL_ROOT_PASSWORD`).
    - Dilengkapi healthcheck `mysqladmin ping` untuk memastikan database siap menerima koneksi sebelum backend memulai migrasi.
 2. **`sippol-backend` (Port 8000)**:
+   - **Image Publik GHCR**: `ghcr.io/mardanaputra/sippol-backend:latest` (dan alias `ghcr.io/mardanaputra/sippol-backed:latest`).
    - Laravel 12 API ditenagai oleh **FrankenPHP** (engine server modern berbasis Caddy & Go) di atas image `dunglas/frankenphp:1-php8.2-alpine`.
    - Menghilangkan kebutuhan Nginx, PHP-FPM, dan Supervisor terpisah menjadi **1 binary atomic** berkinerja tinggi.
    - Entrypoint otomatis menunggu kesiapan MySQL, menjalankan migrasi, dan menyemai data awal.
    - Healthcheck bawaan Laravel di `/up`.
 3. **`sippol-frontend` (Port 3000)**:
+   - **Image Publik GHCR**: `ghcr.io/mardanaputra/sippol-frontend:latest`.
    - Next.js 16.2.6 Standalone pada image minimal `node:20-alpine` (~100 MB).
    - Menjalankan server Node.js non-root (`nextjs`, UID 1001).
    - Membaca konfigurasi dari `.env.frontend` (`INTERNAL_BACKEND_URL`, `NEXT_PUBLIC_*`).

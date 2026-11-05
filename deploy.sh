@@ -40,8 +40,9 @@ if [ ! -f .env.frontend ]; then
     echo "✅ Berkas .env.frontend telah disiapkan."
 fi
 
-# 3. Build dan jalankan kontainer
-echo "📦 Menjalankan docker compose up..."
+# 3. Pull image dari GHCR jika tersedia, lalu jalankan
+echo "📦 Menarik image dari GHCR dan menjalankan layanan..."
+docker compose pull 2>/dev/null || true
 docker compose up -d --build --remove-orphans
 
 # 4. Tunggu hingga kontainer berstatus healthy

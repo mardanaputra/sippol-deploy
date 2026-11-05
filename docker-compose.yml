@@ -25,6 +25,7 @@ services:
       start_period: 20s
 
   backend:
+    image: ghcr.io/mardanaputra/sippol-backend:latest
     build:
       context: ../sippol-backend
       dockerfile: Dockerfile
@@ -49,6 +50,7 @@ services:
       start_period: 10s
 
   frontend:
+    image: ghcr.io/mardanaputra/sippol-frontend:latest
     build:
       context: ../sippol-frontend
       dockerfile: Dockerfile

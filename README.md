@@ -255,10 +255,11 @@ curl -s http://localhost:3000/api/pengaduan/TKT-2026-99991
 
 Sistem SIPPOL telah dilengkapi dengan basis data awal dan akun default melalui **Database Seeder**:
 - **Akun Bawaan Seeder**:
-  - **Username**: `admin`
-  - **Password**: `admin`
+  - **Username**: `admin` (Dapat dikustomisasi via `DEFAULT_ADMIN_USERNAME` di `.env.backend`)
+  - **Password**: `admin` (Dapat dikustomisasi via `DEFAULT_ADMIN_PASSWORD` di `.env.backend`)
   - **Role**: `super_admin`
-- **Data Referensi Seeder**: Jurnal kegiatan lapangan Satpol PP, data Satlinmas di 9 Kecamatan Buleleng, regu patroli trantib, dan regulasi Perda/Perbup.
+- **Data Referensi Master**: Regulasi Perda/Perbup Kabupaten Buleleng, katalog pelanggaran, dan struktur regu patroli.
+- **Data Operasional Dummy (Demo)**: Tiket pengaduan contoh (`Wayan Sudarta`, dsb.) **hanya akan disemai jika `SEED_DUMMY_DATA=true`** pada `.env.backend`. Di lingkungan produksi (`APP_ENV=production`), seeder otomatis menyaring dan melewati data dummy ini agar database bersih.
 
 Untuk menjalankan seeder pada inisialisasi awal server baru:
 ```bash
@@ -422,6 +423,8 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Port $server_port;
     }
 }
 ```
@@ -433,6 +436,21 @@ sudo nginx -t
 sudo systemctl reload nginx
 sudo certbot --nginx -d sippol.bulelengkab.go.id -d api-sippol.bulelengkab.go.id
 ```
+
+---
+
+### Mitigasi Khusus Isu HTTPS & Reverse Proxy di Laravel
+Dalam arsitektur kontainer di balik Reverse Proxy, sering terjadi kendala:
+1. **Mixed Content / HTTP Links**: Laravel menghasilkan tautan `http://` alih-alih `https://`.
+2. **IP Pengunjung Tercatat Gateway Docker**: Seluruh IP di `activity_logs` dan rate limiter bernilai `172.18.0.1`.
+3. **Session Cookie Mismatch**: Cookie ditolak browser karena skema dianggap tidak aman.
+
+Sistem SIPPOL telah dikonfigurasi dengan mitigasi 3-lapis (*3-tier defense*) secara bawaan:
+- **Lapisan Host Proxy**: Meneruskan header `X-Forwarded-Proto $scheme;`, `X-Forwarded-Host $host;`, dan `X-Forwarded-For`.
+- **Lapisan FrankenPHP (Caddyfile)**: Mengaktifkan `servers { trusted_proxies static private_ranges }` agar Caddy mempercayai IP bridge Docker dan tidak menghapus header dari proxy host.
+- **Lapisan Laravel Kernel (`bootstrap/app.php` & `AppServiceProvider.php`)**:
+  - `$middleware->trustProxies(at: '*')`: Menginstruksikan Laravel untuk mempercayai seluruh proxy upstream tepercaya, memulihkan fungsi `request()->ip()` asli pengunjung, serta mendeteksi status `request()->isSecure()`.
+  - `URL::forceScheme('https')`: Memaksa seluruh tautan URL, aset, paginasi, dan redirect menggunakan protokol `https://` secara otomatis saat berada di lingkungan produksi.
 
 ---
 

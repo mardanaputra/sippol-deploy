@@ -69,6 +69,8 @@ SIPPOL dideploy dalam 3 kontainer terisolasi (*atomic containers*) di dalam jari
    - Ditenagai oleh **FrankenPHP** (engine server berbasis Caddy & Go) di atas image `dunglas/frankenphp:1-php8.2-alpine`.
    - Menggantikan Nginx, PHP-FPM, dan Supervisor menjadi **1 binary atomic** dengan performa tinggi, mendukung HTTP/2, HTTP/3, serta kompresi otomatis Zstandard, Brotli, dan Gzip.
    - Konfigurasi Caddyfile telah di-hardened dengan batasan body size 64MB untuk menangani unggahan foto bukti & berkas PDF Base64.
+   - **Local Bind Mount `.env.backend:/app/.env`**: Berkas `.env.backend` pada host di-mount langsung ke `/app/.env` di dalam kontainer backend. Hal ini memungkinkan perintah seperti `php artisan key:generate` langsung menimpa kunci pada berkas host secara persisten.
+   - **Tanpa Cache Konfigurasi Kaku**: Sistem sengaja **tidak** menjalankan `php artisan optimize` atau `config:cache` pada saat build maupun boot kontainer. Ini memastikan perubahan nilai di `.env.backend` langsung terbaca secara dinamis tanpa perlu membersihkan cache berulang kali.
 3. **Database (MySQL 8.0)**:
    - Beroperasi secara privat dalam jaringan internal Docker (port 3306 tidak diekspos ke publik host untuk keamanan maksimal).
    - Dilengkapi healthcheck native `mysqladmin ping`.
@@ -108,8 +110,8 @@ Salin berkas template: `cp .env.backend.example .env.backend`
 | `DB_USERNAME` | String | `sippol_user` | Akun database untuk operasional Laravel. |
 | `DB_PASSWORD` | String | *Rahasia Aman* | Kata sandi akun database `sippol_user`. |
 | `MYSQL_ROOT_PASSWORD` | String | *Rahasia Aman* | Kata sandi superuser root MySQL di kontainer `sippol-mysql`. |
-| `AUTORUN_MIGRATIONS` | Boolean | `true` | Otomatis menjalankan `php artisan migrate --force` saat kontainer menyala. |
-| `RUN_SEEDERS` | Boolean | `true` | Otomatis menjalankan seeder akun admin awal dan data referensi Satpol PP. |
+| `AUTORUN_MIGRATIONS` | Boolean | `false` | **Manual (Default)**: Migrasi database tidak dijalankan otomatis saat boot demi keamanan skema produksi. |
+| `RUN_SEEDERS` | Boolean | `false` | **Manual (Default)**: Seeder hanya dijalankan manual saat inisialisasi awal server baru. |
 | `RECAPTCHA_SECRET_KEY` | String | *Kunci Google Secret* | Kunci server-side untuk memvalidasi token reCAPTCHA dari halaman login admin. |
 
 ---
@@ -173,6 +175,25 @@ Jika Anda melakukan kustomisasi kode sumber lokal dan ingin mem-build ulang kont
 ```bash
 docker compose up -d --build --remove-orphans
 ```
+
+---
+
+### Langkah Lanjutan Wajib: Migrasi Database Manual
+Demi keamanan skema produksi, migrasi database sengaja **tidak dijalankan otomatis saat boot kontainer** (`AUTORUN_MIGRATIONS=false`). Jalankan migrasi secara eksplisit setelah kontainer berstatus `healthy`:
+
+```bash
+# 1. Jalankan migrasi tabel database
+docker compose exec backend php artisan migrate --force
+
+# 2. (Khusus inisialisasi awal server baru) Jalankan seeder akun & data referensi
+docker compose exec backend php artisan db:seed --force
+```
+
+*(Opsional)* Jika Anda ingin men-generate atau me-refresh `APP_KEY` secara manual di server:
+```bash
+docker compose exec backend php artisan key:generate
+```
+*Karena berkas `.env.backend` di-mount ke `/app/.env`, perintah di atas akan langsung menimpa dan menyimpan kunci baru di berkas host `.env.backend`.*
 
 ---
 

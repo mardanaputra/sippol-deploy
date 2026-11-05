@@ -40,6 +40,7 @@ services:
         condition: service_healthy
     volumes:
       - backend_storage:/app/storage
+      - ./.env.backend:/app/.env
     networks:
       - sippol-network
     healthcheck:

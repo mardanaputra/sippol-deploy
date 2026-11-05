@@ -15,7 +15,7 @@ Sistem dideploy dalam dua kontainer terisolasi (*atomic containers*) yang terhub
                         ▼ (Port 3000)                                         ▼ (Port 8000)
             ┌───────────────────────┐                             ┌───────────────────────┐
             │    sippol-frontend    │                             │    sippol-backend     │
-            │  (Next.js Standalone) │ ──[ internal proxy /api ]──>│ (PHP 8.2 FPM + Nginx) │
+            │  (Next.js Standalone) │ ──[ internal proxy /api ]──>│ (Laravel + FrankenPHP)│
             └───────────────────────┘                             └───────────┬───────────┘
                                                                               │
                                                                    ┌──────────┴──────────┐
@@ -29,8 +29,9 @@ Sistem dideploy dalam dua kontainer terisolasi (*atomic containers*) yang terhub
    - Menjalankan server Node.js non-root (`nextjs`, UID 1001).
    - Memiliki healthcheck otomatis di root `/`.
 2. **`sippol-backend` (Port 8000)**:
-   - Laravel 12 API di atas `php:8.2-fpm-alpine` yang dibundel langsung dengan **Nginx** dan **Supervisor** (~120 MB).
-   - Dikonfigurasi untuk menangani payload Base64 besar (foto bukti & PDF) dengan limit `client_max_body_size 64M;` dan PHP `post_max_size 64M`.
+   - Laravel 12 API berbasis **FrankenPHP** (engine server modern berbasis Caddy & Go) di atas image `dunglas/frankenphp:1-php8.2-alpine`.
+   - Menggantikan stack tradisional (Nginx + PHP-FPM + Supervisor) dengan **1 binary atomic** berkinerja tinggi, mendukung HTTP/2, HTTP/3, serta kompresi Zstandard & Brotli secara terintegrasi.
+   - Dikonfigurasi untuk menangani payload Base64 besar (foto bukti & PDF) dengan limit `request_body max_size 64MB` dan PHP `post_max_size 64M`.
    - Mengelola lifecycle otomatis via `docker-entrypoint.sh` (pembuatan file SQLite, generate `APP_KEY`, penyesuaian hak akses `storage/`, migrasi, dan seeder).
    - Memiliki healthcheck bawaan Laravel di `/up`.
 
@@ -165,14 +166,14 @@ Data persisten disimpan pada dua named volume Docker:
 
 ### Backup Database SQLite
 ```bash
-docker compose exec backend cp /var/www/html/database/database.sqlite /var/www/html/storage/backup_$(date +%Y%m%d).sqlite
-docker cp sippol-backend:/var/www/html/storage/backup_$(date +%Y%m%d).sqlite ./backup_database.sqlite
+docker compose exec backend cp /app/database/database.sqlite /app/storage/backup_$(date +%Y%m%d).sqlite
+docker cp sippol-backend:/app/storage/backup_$(date +%Y%m%d).sqlite ./backup_database.sqlite
 ```
 
 ### Restore Database SQLite
 ```bash
-docker cp ./backup_database.sqlite sippol-backend:/var/www/html/database/database.sqlite
-docker compose exec backend chown www-data:www-data /var/www/html/database/database.sqlite
+docker cp ./backup_database.sqlite sippol-backend:/app/database/database.sqlite
+docker compose exec backend chown www-data:www-data /app/database/database.sqlite
 docker compose restart backend
 ```
 

@@ -1,0 +1,79 @@
+name: sippol
+
+services:
+  backend:
+    build:
+      context: ../sippol-backend
+      dockerfile: Dockerfile
+    container_name: sippol-backend
+    restart: unless-stopped
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    environment:
+      APP_NAME: "${APP_NAME:-SIPPOL PP Buleleng}"
+      APP_ENV: "${APP_ENV:-production}"
+      APP_DEBUG: "${APP_DEBUG:-false}"
+      APP_KEY: "${APP_KEY:-}"
+      APP_URL: "${APP_URL:-http://localhost:8000}"
+      DB_CONNECTION: "${DB_CONNECTION:-sqlite}"
+      DB_DATABASE: "${DB_DATABASE:-/var/www/html/database/database.sqlite}"
+      DB_HOST: "${DB_HOST:-mysql}"
+      DB_PORT: "${DB_PORT:-3306}"
+      DB_USERNAME: "${DB_USERNAME:-root}"
+      DB_PASSWORD: "${DB_PASSWORD:-}"
+      AUTORUN_MIGRATIONS: "${AUTORUN_MIGRATIONS:-true}"
+      RUN_SEEDERS: "${RUN_SEEDERS:-true}"
+      RECAPTCHA_SECRET_KEY: "${RECAPTCHA_SECRET_KEY:-}"
+    volumes:
+      - backend_storage:/var/www/html/storage
+      - backend_database:/var/www/html/database
+    networks:
+      - sippol-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8000/up"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  frontend:
+    build:
+      context: ../sippol-frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: "${NEXT_PUBLIC_API_URL:-http://localhost:8000}"
+        NEXT_PUBLIC_RECAPTCHA_SITE_KEY: "${NEXT_PUBLIC_RECAPTCHA_SITE_KEY:-}"
+        INTERNAL_BACKEND_URL: "${INTERNAL_BACKEND_URL:-http://backend:8000}"
+    container_name: sippol-frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      HOSTNAME: "0.0.0.0"
+      NEXT_PUBLIC_API_URL: "${NEXT_PUBLIC_API_URL:-http://localhost:8000}"
+      NEXT_PUBLIC_RECAPTCHA_SITE_KEY: "${NEXT_PUBLIC_RECAPTCHA_SITE_KEY:-}"
+      INTERNAL_BACKEND_URL: "${INTERNAL_BACKEND_URL:-http://backend:8000}"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - sippol-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  backend_storage:
+    name: sippol_backend_storage
+  backend_database:
+    name: sippol_backend_database
+
+networks:
+  sippol-network:
+    name: sippol-network
+    driver: bridge

@@ -71,8 +71,8 @@ SIPPOL dideploy dalam 3 kontainer terisolasi (*atomic containers*) di dalam jari
    - Dijalankan sebagai non-root user (`nextjs`, UID 1001) di atas `node:20-alpine`.
    - Ukuran image minimalis (~100 MB).
    - Pemanggilan API relatif `/api/*` secara otomatis diproxy oleh server Next.js ke backend melalui internal Docker bridge (`INTERNAL_BACKEND_URL=http://backend:8000`), sehingga tidak memerlukan konfigurasi CORS rumit di sisi peramban.
-2. **Backend (Laravel 12 API + FrankenPHP)**:
-   - Ditenagai oleh **FrankenPHP** (engine server berbasis Caddy & Go) di atas image `dunglas/frankenphp:1-php8.2-alpine`.
+2. **Backend (Laravel 13 API + FrankenPHP)**:
+   - Ditenagai oleh **FrankenPHP** (engine server berbasis Caddy & Go) di atas image `dunglas/frankenphp:1-php8.4-alpine`.
    - Menggantikan Nginx, PHP-FPM, dan Supervisor menjadi **1 binary atomic** dengan performa tinggi, mendukung HTTP/2, HTTP/3, serta kompresi otomatis Zstandard, Brotli, dan Gzip.
    - Konfigurasi Caddyfile telah di-hardened dengan batasan body size 64MB untuk menangani unggahan foto bukti & berkas PDF Base64.
    - **Local Bind Mount `.env.backend:/app/.env`**: Berkas `.env.backend` pada host di-mount langsung ke `/app/.env` di dalam kontainer backend. Hal ini memungkinkan perintah seperti `php artisan key:generate` langsung menimpa kunci pada berkas host secara persisten.
@@ -88,7 +88,7 @@ SIPPOL dideploy dalam 3 kontainer terisolasi (*atomic containers*) di dalam jari
 | Layanan | Nama Kontainer | Port Host | Port Internal | Image Registry | Deskripsi |
 |---|---|---|---|---|---|
 | **Frontend** | `sippol-frontend` | `3000` | `3000/tcp` | `ghcr.io/mardanaputra/sippol-frontend:latest` | Next.js 16 App Router (UI Warga & Admin Portal) |
-| **Backend** | `sippol-backend` | `8000` | `8000/tcp` | `ghcr.io/mardanaputra/sippol-backend:latest` | Laravel 12 API ditenagai FrankenPHP |
+| **Backend** | `sippol-backend` | `8000` | `8000/tcp` | `ghcr.io/mardanaputra/sippol-backend:latest` | Laravel 13 API ditenagai FrankenPHP |
 | **Database** | `sippol-mysql` | *Tidak diekspos* | `3306/tcp` | `mysql:8.0` | Basis data relasional produksi |
 
 ---
